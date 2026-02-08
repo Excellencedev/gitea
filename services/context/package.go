@@ -12,6 +12,7 @@ import (
 	"code.gitea.io/gitea/models/perm"
 	"code.gitea.io/gitea/models/unit"
 	user_model "code.gitea.io/gitea/models/user"
+	"code.gitea.io/gitea/modules/reqctx"
 	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/structs"
 	"code.gitea.io/gitea/modules/templates"
@@ -28,6 +29,85 @@ type packageAssignmentCtx struct {
 	*Base
 	Doer        *user_model.User
 	ContextUser *user_model.User
+}
+
+const (
+	packageTypeDataKey    = "PackageType"
+	packageNameDataKey    = "PackageName"
+	packageVersionDataKey = "PackageVersion"
+)
+
+func ensureContextData(ctx *Base) reqctx.ContextData {
+	if ctx.Data == nil {
+		ctx.Data = make(reqctx.ContextData)
+	}
+	return ctx.Data
+}
+
+func SetPackageContext(ctx *Base, packageType packages_model.Type, name, version string) {
+	data := ensureContextData(ctx)
+	if packageType != "" {
+		data[packageTypeDataKey] = packageType
+	}
+	if name != "" {
+		data[packageNameDataKey] = name
+	}
+	if version != "" {
+		data[packageVersionDataKey] = version
+	}
+}
+
+func PackageTypeAssignment(packageType packages_model.Type) func(ctx *Context) {
+	return func(ctx *Context) {
+		SetPackageContext(ctx.Base, packageType, "", "")
+	}
+}
+
+func PackageTypeAssignmentAPI(packageType packages_model.Type) func(ctx *APIContext) {
+	return func(ctx *APIContext) {
+		SetPackageContext(ctx.Base, packageType, "", "")
+	}
+}
+
+func PackageParamsAssignment(nameParams, versionParams []string) func(ctx *Context) {
+	return func(ctx *Context) {
+		SetPackageContext(ctx.Base, "", firstPathParam(ctx.Base, nameParams), firstPathParam(ctx.Base, versionParams))
+	}
+}
+
+func PackageParamsAssignmentAPI(nameParams, versionParams []string) func(ctx *APIContext) {
+	return func(ctx *APIContext) {
+		SetPackageContext(ctx.Base, "", firstPathParam(ctx.Base, nameParams), firstPathParam(ctx.Base, versionParams))
+	}
+}
+
+func firstPathParam(ctx *Base, params []string) string {
+	for _, param := range params {
+		if param == "" {
+			continue
+		}
+		value := ctx.PathParam(param)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func getPackageContextData(ctx *Base) (string, string, string) {
+	var packageType string
+	if value, ok := ctx.Data[packageTypeDataKey]; ok {
+		switch value := value.(type) {
+		case packages_model.Type:
+			packageType = string(value)
+		case string:
+			packageType = value
+		}
+	}
+
+	name, _ := ctx.Data[packageNameDataKey].(string)
+	version, _ := ctx.Data[packageVersionDataKey].(string)
+	return packageType, name, version
 }
 
 // PackageAssignment returns a middleware to handle Context.Package assignment
@@ -71,6 +151,18 @@ func packageAssignment(ctx *packageAssignmentCtx, errCb func(int, any)) *Package
 	packageType := ctx.PathParam("type")
 	name := ctx.PathParam("name")
 	version := ctx.PathParam("version")
+	if packageType == "" || name == "" || version == "" {
+		dataType, dataName, dataVersion := getPackageContextData(ctx.Base)
+		if packageType == "" {
+			packageType = dataType
+		}
+		if name == "" {
+			name = dataName
+		}
+		if version == "" {
+			version = dataVersion
+		}
+	}
 	if packageType != "" && name != "" && version != "" {
 		pv, err := packages_model.GetVersionByNameAndVersion(ctx, pkg.Owner.ID, packages_model.Type(packageType), name, version)
 		if err != nil {
